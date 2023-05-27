@@ -134,3 +134,4 @@ class Allbaro(object):
         response_data = parsed_response.get('SHEET').get('DATA')
         total_count = int(response_data.get('@TOTAL', 0))
         rows = [row.get('TD') for row in response_data.get('TR')]
+        return rows
