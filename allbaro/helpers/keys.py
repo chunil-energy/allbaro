@@ -26,7 +26,6 @@ handover_process_list_keys = [
     "tran_vehc_nums",
     "tran_rfid_yn",
     "trtm_firm_name",
-
     "trtm_recv_date",
     "trtm_recv_work_date",
     "trtm_qunt",
