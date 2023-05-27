@@ -1,12 +1,16 @@
+import csv
 import datetime
 import json
+import math
+from dateutil.relativedelta import relativedelta
 import xmltodict
 import requests
 from bs4 import BeautifulSoup
+import pytz
 
 from allbaro.errors import AlreadyAuthenticationError, AllbaroResponseError, LoginFailedError, AllbaroError, \
     UnauthenticatedError, ParsingError
-from allbaro.helpers import generate_header
+from allbaro.helpers import generate_header, handover_process_list_keys
 
 
 class Allbaro(object):
@@ -26,6 +30,11 @@ class Allbaro(object):
         self.headers = generate_header(self.system_intro_url)
         self.entn = None
         self.emis_chrg = None
+
+
+    def __now(self):
+        KST = pytz.timezone('Asia/Seoul')
+        return datetime.datetime.now(tz=KST)
 
     def __temp_save(self, contents):
         # 디버깅 용으로 Html 파일 저장하는 메서드
@@ -108,29 +117,75 @@ class Allbaro(object):
             self.password = None
             raise e
 
-    def handover_process_list(self, start_date: datetime.date, end_date: datetime.date):
-        if self.is_authenticated is False:
-            raise UnauthenticatedError()
-        self.__set_header(self.handover_process_list_url)
-        data = {
-            'entn': self.entn, 'entn_name': self.entn_name, 'S_CONTROLLER': '', 'S_METHOD': 'search',
-            'S_SAVENAME': '', 'S_FORWARD': '', 'S_TREECOL': '', 'cls_yn': '', 'agency_yn': '', 'agency_entn': '',
-            'agency_firm_name': '', 'err': '', 'myPage': '',
-            'start_date': start_date.strftime("%Y/%m/%d"),
-            'end_date': end_date.strftime("%Y/%m/%d"),
-            'search_agency_yn': '', 'wste_name_1': '', 'wste_code_1': '', 'manf_type_1': '1', 'rfid_yn_1': '',
-            'manf_nums_1': '', 'emis_firm_name': self.entn_name, 'emis_chrg': self.entn, 'tran_firm_name': '',
-            'tran_chrg': '', 'trtm_firm_name': '', 'trtm_chrg': '', 'emis_vehc_nums_1': '', 'tran_vehc_nums_1': '',
-            'trtm_vehc_nums_1': '', 'ibTabTop1': '', 'tmpinput1': '', 'editpage1': '', 'ibTabBottom1': '',
-            'ibTabTop2': '', 'editpage2': '', 'ibTabBottom2': '', 'ibTabTop3': '', 'editpage3': '', 'ibTabBottom3': '',
-            'pageNum': '1', 'pageNo': '1', 'onePageRows': '10'
-        }
+    def __handover_process_list(self, data):
         query = "&".join([f"{key}={value}" for key, value in data.items()]).encode()
-
         response = self.session.post(
             self.handover_process_search_url, headers=self.headers, data=query
         )
         parsed_response = xmltodict.parse(response.text)
         response_data = parsed_response.get('SHEET').get('DATA')
-        total_count = int(response_data.get('@TOTAL', 0))
-        rows = [row.get('TD') for row in response_data.get('TR')]
+        if response_data is None:
+            # 기간 내 데이터 없음
+            return 0, []
+        # 첫번째 페이지에 대한 응답에서만 total_count가 온다.
+        # 그 외의 경우엔 빈 스트링이 반환되므로 1페이지 응답과, 2페이지가 아닌 응답을 구분해서 처리해야한다.
+        _total_count_string = response_data.get('@TOTAL', '')
+        total_count = None if _total_count_string == '' else int(_total_count_string)
+        tr = response_data.get('TR')
+        if isinstance(tr, list):
+            rows = [row.get('TD') for row in tr]
+        else:
+            print(tr)
+            rows = [tr.get('TD')]
+        return total_count, rows
+
+
+    def handover_process_list(self, start_date: datetime.date, end_date: datetime.date):
+        # 인계서진행상황확인 - 인계서진행상황
+        if self.is_authenticated is False:
+            raise UnauthenticatedError()
+        self.__set_header(self.handover_process_list_url)
+        now = self.__now()
+        end_date = end_date if end_date <= now.date() else now.date()
+        result_list = []
+        partial_start_date = start_date
+        while True:
+            page = 1
+            one_page_rows = 500
+            max_page = 1
+            total_count = None
+            _partial_end_date = partial_start_date + relativedelta(days=30)
+            partial_end_date = min(end_date, _partial_end_date)
+            while True:
+                # pageNo 은 결과와 무관하다.(추측)
+                data = {
+                    'entn': self.entn, 'entn_name': self.entn_name, 'S_CONTROLLER': '', 'S_METHOD': 'search',
+                    'S_SAVENAME': '', 'S_FORWARD': '', 'S_TREECOL': '', 'cls_yn': '', 'agency_yn': '', 'agency_entn': '',
+                    'agency_firm_name': '', 'err': '', 'myPage': '',
+                    'start_date': partial_start_date.strftime("%Y/%m/%d"),
+                    'end_date': partial_end_date.strftime("%Y/%m/%d"),
+                    'search_agency_yn': '', 'wste_name_1': '', 'wste_code_1': '', 'manf_type_1': '1', 'rfid_yn_1': '',
+                    'manf_nums_1': '', 'emis_firm_name': self.entn_name, 'emis_chrg': self.entn, 'tran_firm_name': '',
+                    'tran_chrg': '', 'trtm_firm_name': '', 'trtm_chrg': '', 'emis_vehc_nums_1': '', 'tran_vehc_nums_1': '',
+                    'trtm_vehc_nums_1': '', 'ibTabTop1': '', 'tmpinput1': '', 'editpage1': '', 'ibTabBottom1': '',
+                    'ibTabTop2': '', 'editpage2': '', 'ibTabBottom2': '', 'ibTabTop3': '', 'editpage3': '', 'ibTabBottom3': '',
+                    'pageNum': str(page), 'pageNo': 1, 'onePageRows': str(one_page_rows)
+                }
+                _total_count, rows = self.__handover_process_list(data)
+                if page == 1:
+                    # __handover_process_list 주석 참고
+                    total_count = _total_count
+                    max_page = math.ceil(total_count/one_page_rows)
+                if total_count == 0:
+                    break
+                result_list += rows
+                if max_page == page:
+                    break
+                else:
+                    page += 1
+            if partial_end_date == end_date:
+                break
+            else:
+                partial_start_date = partial_end_date + relativedelta(days=1)
+        return [dict(zip(handover_process_list_keys, result)) for result in result_list]
+
