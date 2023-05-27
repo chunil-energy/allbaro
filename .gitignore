@@ -1,6 +1,2 @@
 /.env/
-/resources/dev.txt
-/resources/handover_process_list.js
-/resources/handover_process_list.xlsx
-/resources/result_list.csv
 /resources/
